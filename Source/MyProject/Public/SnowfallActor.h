@@ -11,15 +11,12 @@ USTRUCT(BlueprintType)
 struct FParticle
 {
 	GENERATED_BODY()
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particle")
+	
 	FVector Position;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particle")
+	FVector Velocity;
 	float Diameter;
-
-	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Particle")
 	float Speed;
+
 };
 
 UCLASS()
@@ -28,11 +25,9 @@ class MYPROJECT_API ASnowfallActor : public AActor
 	GENERATED_BODY()
 	
 public:	
-	// Sets default values for this actor's properties
 	ASnowfallActor();
 
 protected:
-	// Called when the game starts or when spawned
 	virtual void BeginPlay() override;
 
 public:	
@@ -41,6 +36,9 @@ public:
 	
 private:
 	// Class variables for simulation
+	UPROPERTY(EditAnywhere, Category="Snowfall")
+	int32 NumParticles;
+	
 	UPROPERTY(EditAnywhere, Category = "Snowfall")
 	float Alpha; // Shape parameter for gamma distribution
 
@@ -48,8 +46,20 @@ private:
 	float Beta; // Scale parameter for gamma distribution
 
 	UPROPERTY(EditAnywhere, Category = "Snowfall")
-	int32 NumParticles; // Number of snowflakes
+	float minD; //cm, minimal particle size
 
+	UPROPERTY(EditAnywhere, Category = "Snowfall")
+	float maxD; //cm, maximal particle size
+
+	UPROPERTY(EditAnywhere, Category = "Snowfall")
+	float ra1; 
+
+	UPROPERTY(EditAnywhere, Category = "Snowfall")
+	float d;
+	
+	UPROPERTY(EditAnywhere, Category = "Snowfall")
+	int32 FlakeRate;
+	
 	UPROPERTY(EditAnywhere, Category = "Snowfall")
 	float SpawnHeight; // Height of the spawn area
 
@@ -57,10 +67,7 @@ private:
 	float ScreenWidth; // Width of the spawn area
 
 	UPROPERTY(EditAnywhere, Category = "Snowfall")
-	FVector2D WindSpeed; // X: horizontal wind speed, Y: vertical wind offset (if needed)
-
-	UPROPERTY(EditAnywhere, Category = "Snowfall")
-	UStaticMeshComponent* GroundMesh;
+	FVector WindSpeed; // X: horizontal wind speed, Y: vertical wind offset (if needed)
 
 	TArray<FParticle> Particles; // Array of particles
 
@@ -72,10 +79,9 @@ private:
 
 	// Functions for particle initialization and update
 	void InitializeParticles();
-	void SpawnParticle(FParticle& Particle);
-	void UpdateParticle(FParticle& Particle, float DeltaTime);
+	void SpawnParticle();
+	void UpdateParticle(float DeltaTime);
 	float GenerateParticleDiameter();
 	float CalculateTerminalSpeed(float Diameter);
-	void UpdateNiagaraParameters();
-	FVector2D PredictParticlePosition(FParticle& Particle, float Time);
+	//void UpdateNiagaraParameters();
 };

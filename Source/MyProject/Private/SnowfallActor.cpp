@@ -1,8 +1,9 @@
 
 #include "SnowfallActor.h"
 #include "NiagaraFunctionLibrary.h"
-#include "DrawDebugHelpers.h"
 #include <random>
+#include <boost/math/distributions/gamma.hpp>
+#include <boost/random/sobol.hpp>
 
 // Sets default values
 ASnowfallActor::ASnowfallActor()
@@ -11,32 +12,23 @@ ASnowfallActor::ASnowfallActor()
 
 	// Create a root component
 	RootComponent = CreateDefaultSubobject<USceneComponent>(TEXT("RootComponent"));
+
+	//default parameters
+	Alpha = 2.0f;
+	Beta = 1.0f;
+	minD = .01; //cm
+	maxD = .8; //cm
+	NumParticles = 100; //number of snowflakes in the buffer
+
+	FlakeRate = 45; //particles/m/s (per linear horizontal length of the sim screen)
+	
+	SpawnHeight = 1000.0f; // Height of spawn area
+	ScreenWidth = 1000.0f; // Width of spawn area
 	
 	// Create the Niagara Component
 	NiagaraComponent = CreateDefaultSubobject<UNiagaraComponent>(TEXT("NiagaraComponent"));
 	NiagaraComponent->SetupAttachment(RootComponent);
 
-	// Initialize Ground Mesh
-	GroundMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("GroundMesh"));
-	GroundMesh->SetupAttachment(RootComponent);
-
-	// Optionally set a default static mesh (e.g., a cube or plane)
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(TEXT("/Engine/BasicShapes/Cube"));
-	if (CubeMesh.Succeeded())
-	{
-		GroundMesh->SetStaticMesh(CubeMesh.Object);
-	}
-
-	// Set the size of the ground mesh to 100x100
-	GroundMesh->SetRelativeLocation(FVector(0.0f, 0.0f, -10.0f));
-	GroundMesh->SetRelativeScale3D(FVector(1.0f, 1.0f, 0.5f));
-
-	// Default parameters
-	Alpha = 2.0f;        // Example shape parameter for gamma distribution
-	Beta = 1.0f;         // Example scale parameter for gamma distribution
-	NumParticles = 100;  // Number of snowflakes
-	SpawnHeight = 1000.0f; // Height of spawn area
-	ScreenWidth = 1000.0f; // Width of spawn area
 
 }
 
@@ -45,6 +37,7 @@ void ASnowfallActor::BeginPlay()
 {
 	Super::BeginPlay();
 
+
 	//activate niagara system
 	if (SnowNiagaraSystem)
 	{
@@ -52,114 +45,126 @@ void ASnowfallActor::BeginPlay()
 		NiagaraComponent->Activate();
 
 		// Set the initial value of the exposed parameter
-		NiagaraComponent->SetFloatParameter(TEXT("CustomSpawnRate"), static_cast<float>(NumParticles));
+		NiagaraComponent->SetFloatParameter(TEXT("CustomSpawnRate"), static_cast<float>(FlakeRate));
+		NiagaraComponent->SetVectorParameter(TEXT("CustomWind"), WindSpeed);
+		NiagaraComponent->SetFloatParameter(TEXT("UniformSpriteSizeMin"), minD);
+		NiagaraComponent->SetFloatParameter(TEXT("UniformSpriteSizeMax"), maxD);
 	}
 
-	// Dynamically calculate spawn height above the ground
-	FVector GroundPosition = GroundMesh->GetComponentLocation();
-	SpawnHeight = GroundPosition.Z + 1000.0f; // 1000 units above the ground
-
 	InitializeParticles();
+	SpawnParticle();
 }
 
 // Tick: Update particles every frame
 void ASnowfallActor::Tick(float DeltaTime)
 {
-	// Clamp DeltaTime to avoid extreme variations
-	DeltaTime = FMath::Clamp(DeltaTime, 0.016f, 0.033f); // ~30–60 FPS range
 	Super::Tick(DeltaTime);
-	UE_LOG(LogTemp, Warning, TEXT("DeltaTime: %f"), DeltaTime);
-	
-	UpdateNiagaraParameters(); // Update Niagara parameters dynamically
-
-	// Update particles
-	for (FParticle& Particle : Particles)
-	{
-		UpdateParticle(Particle, DeltaTime);
-	}
+	UpdateParticle(DeltaTime);
 }
 
 // Initialize the particles
 void ASnowfallActor::InitializeParticles()
 {
-	Particles.Empty(); // Clear any existing particles in the array
+	Particles.Empty();// Clear any existing particles in the array
+	Particles.Reserve(NumParticles); 
 
-	for (int32 i = 0; i < NumParticles; ++i)
+	for (int32 i = 0; i < FlakeRate; ++i)
 	{
 		FParticle NewParticle;
 
 		// Generate particle properties
-		NewParticle.Position.X = FMath::RandRange(-ScreenWidth / 2.0f, ScreenWidth / 2.0f);
-		NewParticle.Position.Y = FMath::RandRange(-ScreenWidth / 2.0f, ScreenWidth / 2.0f);
-		NewParticle.Position.Z = SpawnHeight;
+		NewParticle.Position = FVector(
+			FMath::RandRange(-ScreenWidth, ScreenWidth),
+			FMath::RandRange(-ScreenWidth, ScreenWidth),
+			SpawnHeight
+			);
 
 		NewParticle.Diameter = GenerateParticleDiameter();
+		UE_LOG(LogTemp, Warning, TEXT("Particle diameter: %f"), NewParticle.Diameter);
+		
 		NewParticle.Speed = CalculateTerminalSpeed(NewParticle.Diameter);
+		UE_LOG(LogTemp, Warning, TEXT("Particle speed: %f"), NewParticle.Speed);
 
 		// Add the particle to the array
 		Particles.Add(NewParticle);
 	}
 }
 
+// Spawn a new particle
+void ASnowfallActor::SpawnParticle()
+{
+	if (!SnowNiagaraSystem) return;
+
+	for (const FParticle& Particle : Particles)
+	{
+		UNiagaraComponent* NiagaraComp = UNiagaraFunctionLibrary::SpawnSystemAtLocation(
+			GetWorld(),
+			SnowNiagaraSystem,
+			Particle.Position);
+	if (NiagaraComp)
+	{
+		// NiagaraComp->SetFloatParameter(TEXT("SpriteSize"), SpriteSize);
+	}
+	}
+}
+
 // Generate a random particle diameter using gamma distribution
 float ASnowfallActor::GenerateParticleDiameter()
 {
-	std::random_device Rd;
-	std::mt19937 Gen(Rd());
-	std::gamma_distribution<double> GammaDist(Alpha, Beta);
+	try
+	{
+		// Static Sobol generator for 1 dimension
+		static boost::random::sobol sobolGen(1); // 1-dimensional Sobol generator
 
-	return static_cast<float>(GammaDist(Gen)); // Convert double to float
+		// Generate the next Sobol value
+		double SobolValue = sobolGen();
+
+		// Validate SobolValue is in [0, 1] (this should always be the case for Sobol)
+		SobolValue = FMath::Clamp(SobolValue, 0.0, 1.0);
+
+		// Apply inverse cumulative Gamma distribution
+		boost::math::gamma_distribution<float> GammaDist(Alpha, Beta);
+		float Diameter = boost::math::quantile(GammaDist, static_cast<float>(SobolValue));
+
+		// Debug log for verification
+		UE_LOG(LogTemp, Warning, TEXT("Generated Diameter: %f"), Diameter);
+
+		return Diameter;
+	}
+	catch (const std::exception& e)
+	{
+		UE_LOG(LogTemp, Error, TEXT("Error in GenerateParticleDiameter: %s"), *FString(e.what()));
+		return 1.0f; // Fallback diameter
+	}
 }
+
+
 
 // Calculate terminal velocity using the power-law equation
 float ASnowfallActor::CalculateTerminalSpeed(float Diameter)
 {
 	float Speed = 0.84f * FMath::Pow(Diameter, 0.36f);
-	UE_LOG(LogTemp, Warning, TEXT("Diameter: %f, Speed: %f"), Speed, Diameter);
+	UE_LOG(LogTemp, Warning, TEXT("Particle Speed: %f"), Speed);
 	return Speed;
 }
 
-// Spawn a new particle
-void ASnowfallActor::SpawnParticle(FParticle& Particle)
-{
-	FVector ActorLocation = GetActorLocation(); // Actor's world location
-	
-	// Calculate spawn position relative to the actor
-	Particle.Position.X = ActorLocation.X + FMath::RandRange(-ScreenWidth / 2.0f, ScreenWidth / 2.0f);
-	Particle.Position.Y = ActorLocation.Y + FMath::RandRange(-ScreenWidth / 2.0f, ScreenWidth / 2.0f);
-	Particle.Position.Z = SpawnHeight;
-
-	Particle.Diameter = GenerateParticleDiameter();
-	Particle.Speed = CalculateTerminalSpeed(Particle.Diameter);
-
-	// Optionally spawn the particle in the Niagara system
-	if (SnowNiagaraSystem)
-	{
-		UNiagaraFunctionLibrary::SpawnSystemAtLocation(GetWorld(), SnowNiagaraSystem, Particle.Position);
-	}
-}
 
 // Update particle position and reset if it falls below ground level
-void ASnowfallActor::UpdateParticle(FParticle& Particle, float DeltaTime)
+void ASnowfallActor::UpdateParticle(float DeltaTime)
 {
-	// Update particle position based on velocity
-	Particle.Position.X += WindSpeed.X * DeltaTime;
-	Particle.Position.Y += WindSpeed.Y * DeltaTime;
-	Particle.Position.Z -= Particle.Speed * DeltaTime;
-	
-	// Check if the particle has fallen below the ground
-	FVector GroundPosition = GroundMesh->GetComponentLocation();
-	if (Particle.Position.Z <= GroundPosition.Z)
+	//update particles
+	for (FParticle& Particle : Particles)
 	{
-		// Respawn particle at the top
-		Particle.Position.X = FMath::RandRange(-ScreenWidth / 2.0f, ScreenWidth / 2.0f);
-		Particle.Position.Z = GroundPosition.Z + 1000.0f;
-		Particle.Diameter = GenerateParticleDiameter();
-		Particle.Speed = CalculateTerminalSpeed(Particle.Diameter);
+		Particle.Position.Z -= Particle.Speed * DeltaTime;
+
+		if (Particle.Position.Z <= 0.0f)
+		{
+			Particle.Position.Z = SpawnHeight;
+		}
 	}
 }
 
-void ASnowfallActor::UpdateNiagaraParameters()
+/*void ASnowfallActor::UpdateNiagaraParameters()
 {
 	if (NiagaraComponent && NiagaraComponent->IsActive())
 	{
@@ -172,4 +177,4 @@ void ASnowfallActor::UpdateNiagaraParameters()
 
 		// You can set other parameters as exposed in the Niagara system
 	}
-}
+}*/
